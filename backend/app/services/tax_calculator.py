@@ -52,8 +52,5 @@ def calculate_current_month_liability(db: Session, company_id: str):
     total_purchase_tax = result.total_purchase_tax or 0.0
     net_liability = total_sales_tax - total_purchase_tax
 
-    return {
-        "total_sales_tax": total_sales_tax,
-        "total_purchase_tax": total_purchase_tax,
-        "net_liability": net_liability
-    }
+    return net_liability
+    
