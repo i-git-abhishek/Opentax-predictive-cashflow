@@ -1,1 +1,25 @@
-;; TDL script to extract daily delta & HTTP POST
+;; ============================================
+;; Module 1: Static HTTP POST test via Gateway menu
+;; Goal: prove TDL -> HTTP POST -> webhook.site works
+;; ============================================
+
+[System: Formula]
+    OpenTaxWebhookURL : "https://webhook.site/e397e80e-0921-4594-9f41-d631810f1ce6"
+
+;; Adds a clickable item to the Gateway of Tally main menu
+[#Menu: Gateway of Tally]
+    Add: Item: Before: @@quit: "Test OpenTax Sync": Display: OpenTax Sync Report
+
+[Report: OpenTax Sync Report]
+    Form: OpenTax Sync Form
+
+[Form: OpenTax Sync Form]
+    Action: HTTP Request : @@OpenTaxWebhookURL : "POST" : "JSON" : "UTF-8" : OpenTax Request Report : OpenTax Post Function
+
+;; Defines the JSON body being sent - static values for this first test
+[Report: OpenTax Request Report]
+    Local: Field: Default: Set as: "C-1002"
+
+[Function: OpenTax Post Function]
+    ;; Called after the request completes - just logs success for now
+    00: Log : "OpenTax test payload sent"
