@@ -1,25 +1,136 @@
 ;; ============================================
 ;; Module 1: Static HTTP POST test via Gateway menu
-;; Goal: prove TDL -> HTTP POST -> webhook.site works
+;; Goal: prove TDL -> HTTP POST -> backend API works
 ;; ============================================
 
 [System: Formula]
-    OpenTaxWebhookURL : "https://webhook.site/e397e80e-0921-4594-9f41-d631810f1ce6"
+    OpenTaxWebhookURL : "http://localhost:8000/api/v1/ingest/daily-delta"
 
-;; Adds a clickable item to the Gateway of Tally main menu
-[#Menu: Gateway of Tally]
-    Add: Item: Before: @@quit: "Test OpenTax Sync": Display: OpenTax Sync Report
+;; Hook into the standard Sales and Purchase voucher entry forms
+[#Form: Sales Color]
+    On: FormAccept: Yes: CALL: OpenTaxSendOnVoucherSave
+    On: FormAccept: Yes: Form Accept
 
-[Report: OpenTax Sync Report]
-    Form: OpenTax Sync Form
+[#Form: Purchase Color]
+    On: FormAccept: Yes: CALL: OpenTaxSendOnVoucherSave
+    On: FormAccept: Yes: Form Accept
 
-[Form: OpenTax Sync Form]
-    Action: HTTP Request : @@OpenTaxWebhookURL : "POST" : "JSON" : "UTF-8" : OpenTax Request Report : OpenTax Post Function
+;; Define Global Variables
+[Variable: OpenTaxCurrentVchDate]
+    Type: Date
 
-;; Defines the JSON body being sent - static values for this first test
-[Report: OpenTax Request Report]
-    Local: Field: Default: Set as: "C-1002"
+[Variable: OpenTaxSalesTaxTotal]
+    Type: Number
 
+[Variable: OpenTaxPurchaseTaxTotal]
+    Type: Number
+
+[System: Variable]
+    OpenTaxCurrentVchDate: ""
+    OpenTaxSalesTaxTotal: 0.0
+    OpenTaxPurchaseTaxTotal: 0.0
+
+;; Define Collections for Daily Totals from Database
+[Collection: OpenTaxDailySalesVouchers]
+    Type: Voucher
+    Filter: OpenTaxIsSalesToday
+
+[Collection: OpenTaxDailyPurchaseVouchers]
+    Type: Voucher
+    Filter: OpenTaxIsPurchaseToday
+
+[Collection: OpenTaxDailySalesLedgerEntries]
+    Source Collection: OpenTaxDailySalesVouchers
+    Walk: LedgerEntries
+    Filter: OpenTaxIsTaxLedger
+
+[Collection: OpenTaxDailyPurchaseLedgerEntries]
+    Source Collection: OpenTaxDailyPurchaseVouchers
+    Walk: LedgerEntries
+    Filter: OpenTaxIsTaxLedger
+
+;; TDL Formulas for Filters and Formatting
+[System: Formula]
+    OpenTaxIsSalesToday: $$IsSales:$VoucherTypeName AND $Date = ##OpenTaxCurrentVchDate
+    OpenTaxIsPurchaseToday: $$IsPurchase:$VoucherTypeName AND $Date = ##OpenTaxCurrentVchDate
+    OpenTaxIsTaxLedger: $$IsLedOfGrp:$LedgerName:$$GroupDutiesAndTaxes
+    OpenTaxTrue: Yes
+
+    ;; ISO Date construction (YYYY-MM-DD)
+    OpenTaxYearStr: $$String:$$Year:##OpenTaxCurrentVchDate
+    OpenTaxMonthStr: if $$Month:##OpenTaxCurrentVchDate < 10 then "0" + $$String:$$Month:##OpenTaxCurrentVchDate else $$String:$$Month:##OpenTaxCurrentVchDate
+    OpenTaxDayStr: if $$Day:##OpenTaxCurrentVchDate < 10 then "0" + $$String:$$Day:##OpenTaxCurrentVchDate else $$String:$$Day:##OpenTaxCurrentVchDate
+    OpenTaxFormattedDate: @@OpenTaxYearStr + "-" + @@OpenTaxMonthStr + "-" + @@OpenTaxDayStr
+
+;; Intercept Function
+[Function: OpenTaxSendOnVoucherSave]
+    Variable: DbSalesTax: Number
+    Variable: DbPurchaseTax: Number
+    Variable: CurrentTax: Number
+
+    ;; Only handle Sales and Purchase vouchers
+    01 : IF : $$IsSales:$VoucherTypeName OR $$IsPurchase:$VoucherTypeName
+        ;; 1. Set current date global variable for collection filtering
+        02 : SET : OpenTaxCurrentVchDate : $Date
+
+        ;; 2. Fetch running totals from previously saved vouchers
+        03 : SET : DbSalesTax : $$FilterAmtTotal:OpenTaxDailySalesLedgerEntries:@@OpenTaxTrue:$$Abs:$Amount
+        04 : SET : DbPurchaseTax : $$FilterAmtTotal:OpenTaxDailyPurchaseLedgerEntries:@@OpenTaxTrue:$$Abs:$Amount
+
+        ;; 3. Get tax amount of current voucher
+        05 : SET : CurrentTax : $$FilterAmtTotal:LedgerEntries:@@OpenTaxIsTaxLedger:$$Abs:$Amount
+
+        ;; 4. Compute running totals including current voucher
+        06 : IF : $$IsSales:$VoucherTypeName
+            07 : SET : OpenTaxSalesTaxTotal : ##DbSalesTax + ##CurrentTax
+            08 : SET : OpenTaxPurchaseTaxTotal : ##DbPurchaseTax
+        09 : ELSE :
+            10 : SET : OpenTaxSalesTaxTotal : ##DbSalesTax
+            11 : SET : OpenTaxPurchaseTaxTotal : ##DbPurchaseTax + ##CurrentTax
+        12 : ENDIF
+
+        ;; 5. Create request payload object and call the HTTP request executor
+        13 : NEW OBJECT : OpenTax Request Report
+        14 : CALL : OpenTaxExecuteRequest
+    15 : ENDIF
+
+;; HTTP Request Executor
+[Function: OpenTaxExecuteRequest]
+    00 : HTTP Request : @@OpenTaxWebhookURL : "POST" : "JSON" : "UTF-8" : OpenTax Request Report : OpenTax Post Function
+
+;; Response Handler
 [Function: OpenTax Post Function]
-    ;; Called after the request completes - just logs success for now
-    00: Log : "OpenTax test payload sent"
+    00: Log : "OpenTax sync payload transmitted successfully"
+
+;; Request Payload Report Definition
+[Report: OpenTax Request Report]
+    Form: OpenTax Request Form
+    Plain JSON: Yes
+
+[Form: OpenTax Request Form]
+    Part: OpenTax Request Part
+    JSONTag: ""
+
+[Part: OpenTax Request Part]
+    Line: OpenTax Request Line
+    JSONTag: ""
+
+[Line: OpenTax Request Line]
+    Fields: OpenTax CompanyId, OpenTaxDate, OpenTaxSalesTax, OpenTaxPurchaseTax
+    JSONTag: ""
+
+[Field: OpenTax CompanyId]
+    Set as: "C-1002"
+    JSONTag: "company_id"
+
+[Field: OpenTaxDate]
+    Set as: @@OpenTaxFormattedDate
+    JSONTag: "date"
+
+[Field: OpenTaxSalesTax]
+    Set as: ##OpenTaxSalesTaxTotal
+    JSONTag: "daily_sales_tax"
+
+[Field: OpenTaxPurchaseTax]
+    Set as: ##OpenTaxPurchaseTaxTotal
+    JSONTag: "daily_purchase_tax"
